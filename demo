@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+import time
+from math import floor
+
+from PIL import ImageFont
+from luma.core.interface.serial import spi
+from luma.lcd.device import ili9341
+from luma.core.render import canvas
+
+
+def init_display():
+    # SPI0, CE0, DC=24, RST=25
+    serial = spi(
+        port=0,
+        device=0,
+        gpio_DC=24,
+        gpio_RST=25,
+        bus_speed_hz=16000000,  # 16 MHz, usually fine
+    )
+
+    # Rotate to use the screen in "portrait" mode: tall display
+    device = ili9341(
+        serial,
+        width=240,
+        height=320,
+        rotate=90  # rotate so 320 is vertical
+    )
+    return device
+
+
+def load_fonts():
+    try:
+        font_big = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20
+        )
+        font_med = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16
+        )
+        font_small = ImageFont.truetype(
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12
+        )
+    except Exception:
+        from PIL import ImageFont as IF
+        font_big = IF.load_default()
+        font_med = IF.load_default()
+        font_small = IF.load_default()
+    return font_big, font_med, font_small
+
+
+def draw_screen(device, font_big, font_med, font_small,
+                progress_frac, elapsed_sec, total_sec, volume_level):
+    """
+    Draw the full "home screen" UI onto the TFT.
+    progress_frac: 0.0 .. 1.0
+    volume_level: 0..10
+    """
+
+    W = device.width   # should be 320 (height in portrait)
+    H = device.height  # 240
+
+    with canvas(device) as draw:
+        # Background
+        draw.rectangle((0, 0, W, H), fill="black")
+
+        # --- Top: album / artist / song ---
+        song_title = "Song Title Long Name"
+        artist = "Artist Name"
+        album = "Album Name Here"
+
+        draw.text((8, 8), song_title, font=font_big, fill="white")
+        draw.text((8, 36), f"{artist}  •  {album}",
+                  font=font_small, fill="white")
+
+        # --- Bluetooth status ---
+        bt_text = "BT: Connected"
+        bt_w, bt_h = draw.textsize(bt_text, font=font_small)
+        draw.text((W - bt_w - 8, 8), bt_text, font=font_small, fill="cyan")
+
+        # --- Progress bar area ---
+        bar_left = 12
+        bar_right = W - 40
+        bar_top = 80
+        bar_height = 14
+
+        # Bar background
+        draw.rectangle((bar_left, bar_top,
+                        bar_right, bar_top + bar_height),
+                       outline="white", fill=None, width=2)
+
+        # Filled part
+        fill_w = int((bar_right - bar_left - 4) * max(0.0, min(1.0, progress_frac)))
+        if fill_w > 0:
+            draw.rectangle(
+                (bar_left + 2, bar_top + 2,
+                 bar_left + 2 + fill_w, bar_top + bar_height - 2),
+                fill="lime"
+            )
+
+        # --- Time text under the bar ---
+        def fmt_t(sec):
+            sec = int(max(0, sec))
+            return f"{sec // 60:02d}:{sec % 60:02d}"
+
+        time_text = f"{fmt_t(elapsed_sec)} / {fmt_t(total_sec)}"
+        draw.text((bar_left, bar_top + bar_height + 6),
+                  time_text, font=font_small, fill="white")
+
+        # --- Volume bar on the right side ---
+        max_vol_steps = 10
+        vol_x = W - 18
+        vol_top = 60
+        vol_bottom = H - 30
+
+        draw.line((vol_x, vol_top, vol_x, vol_bottom),
+                  fill="white", width=2)
+
+        step_h = (vol_bottom - vol_top) / max_vol_steps
+        for i in range(max_vol_steps):
+            y = vol_bottom - (i + 0.5) * step_h
+            x0, y0, x1, y1 = vol_x - 6, int(y - 3), vol_x + 6, int(y + 3)
+            if i < volume_level:
+                draw.rectangle((x0, y0, x1, y1), fill="dodgerblue")
+            else:
+                draw.rectangle((x0, y0, x1, y1), outline="gray")
+
+        # Label for volume
+        draw.text((W - 40, vol_bottom + 4),
+                  f"{volume_level}/10", font=font_small, fill="white")
+
+        # --- Bottom controls / status ---
+        # Play/Pause symbol
+        center_x = 40
+        center_y = H - 24
+        # triangle (play)
+        draw.polygon([(center_x - 6, center_y - 10),
+                      (center_x - 6, center_y + 10),
+                      (center_x + 8, center_y)],
+                     fill="white")
+
+        # Prev / Next icons
+        draw.rectangle((8, center_y - 8, 12, center_y + 8), fill="white")
+        draw.polygon([(12, center_y),
+                      (18, center_y - 8),
+                      (18, center_y + 8)], fill="white")
+
+        draw.rectangle((center_x + 26, center_y - 8,
+                        center_x + 30, center_y + 8), fill="white")
+        draw.polygon([(center_x + 26, center_y),
+                      (center_x + 20, center_y - 8),
+                      (center_x + 20, center_y + 8)], fill="white")
+
+        # Small status text
+        status_text = "Demo UI  •  Hold joystick for menu"
+        draw.text((8, H - 18),
+                  status_text, font=font_small, fill="gray")
+
+
+def main():
+    device = init_display()
+    font_big, font_med, font_small = load_fonts()
+
+    total_time = 10.0  # demo = 10 seconds
+    start = time.time()
+    volume = 7
+
+    while True:
+        now = time.time()
+        elapsed = now - start
+        if elapsed > total_time:
+            elapsed = total_time
+
+        frac = elapsed / total_time
+        draw_screen(device, font_big, font_med, font_small,
+                    frac, elapsed, total_time, volume)
+
+        if elapsed >= total_time:
+            break
+
+        # ~30 FPS
+        time.sleep(1.0 / 30.0)
+
+    # Pause at the end so you can see 100%
+    time.sleep(3)
+
+
+if __name__ == "__main__":
+    main()
